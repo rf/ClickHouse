@@ -12,6 +12,8 @@
 
 #include <AggregateFunctions/IAggregateFunction.h>
 
+#include <common/logger_useful.h>
+
 
 namespace DB
 {
@@ -20,9 +22,9 @@ struct AggregationFunctionDeltaSumData
 {
     T sum = 0;
     bool seen_last = false;
-    T last;
+    T last = 0;
     bool seen_first = false;
-    T first;
+    T first = 0;
 };
 
 template <typename T>
@@ -42,9 +44,9 @@ public:
 
     void ALWAYS_INLINE add(AggregateDataPtr place, const IColumn ** columns, size_t row_num, Arena *) const override
     {
-        const T & value = (*columns[0])[row_num].get<T>();
+        auto value = static_cast<const ColumnVector<T> &>(*columns[0]).getData()[row_num];
 
-        if (this->data(place).last < value && this->data(place).seen_last)
+        if ((this->data(place).last < value) && this->data(place).seen_last)
         {
             this->data(place).sum += (value - this->data(place).last);
         }
@@ -52,7 +54,7 @@ public:
         this->data(place).last = value;
         this->data(place).seen_last = true;
 
-        if (this->data(place).seen_first == false)
+        if (!this->data(place).seen_first)
         {
             this->data(place).first = value;
             this->data(place).seen_first = true;
@@ -61,17 +63,38 @@ public:
 
     void ALWAYS_INLINE merge(AggregateDataPtr place, ConstAggregateDataPtr rhs, Arena *) const override
     {
+        printf("\n\n**************** merge\n");
+        LOG_INFO(&Poco::Logger::get("Aggregator"), "our seen last: {} our seen first: {}", toString(this->data(place).seen_last), toString(this->data(place).seen_first));
+        LOG_INFO(&Poco::Logger::get("Aggregator"), "our last: {} our first: {}", toString(this->data(place).last), toString(this->data(place).first));
+        LOG_INFO(&Poco::Logger::get("Aggregator"), "their seen last: {} their seen first: {}", toString(this->data(rhs).seen_last), toString(this->data(rhs).seen_first));
+        LOG_INFO(&Poco::Logger::get("Aggregator"), "their last: {} their first: {}", toString(this->data(rhs).last), toString(this->data(rhs).first));
+        LOG_INFO(&Poco::Logger::get("Aggregator"), "our sum: {} their sum: {}", toString(this->data(place).sum), toString(this->data(rhs).sum));
+
+        printf("\n\n\n\n\n");
+
         if ((this->data(place).last < this->data(rhs).first) && this->data(place).seen_last && this->data(rhs).seen_first)
         {
             this->data(place).sum += this->data(rhs).sum + (this->data(rhs).first - this->data(place).last);
+            LOG_INFO(&Poco::Logger::get("Aggregator"), "our last is les then their first; adding that delta as well. Our sum now {}",
+                    toString(this->data(place).sum));
+            this->data(place).last = this->data(rhs).last;
+        }
+        else if ((this->data(rhs).last < this->data(place).first && this->data(rhs).seen_last && this->data(place).seen_first))
+        {
+            this->data(place).sum += this->data(rhs).sum + (this->data(place).first - this->data(rhs).last);
+            LOG_INFO(&Poco::Logger::get("Aggregator"), "their last is les then our first; adding that delta as well. Our sum now {}",
+                    toString(this->data(place).sum));
+            this->data(place).first = this->data(rhs).first;
         }
         else
         {
             this->data(place).sum += this->data(rhs).sum;
+            LOG_INFO(&Poco::Logger::get("Aggregator"), "Simply adding the sums; our sum is now {}", toString(this->data(place).sum));
+            this->data(place).first = this->data(rhs).first;
+            this->data(place).seen_first = this->data(rhs).seen_first;
+            this->data(place).last = this->data(rhs).last;
+            this->data(place).seen_last = this->data(rhs).seen_last;
         }
-
-        this->data(place).last = this->data(rhs).last;
-        this->data(place).first = this->data(rhs).first;
     }
 
     void serialize(ConstAggregateDataPtr place, WriteBuffer & buf) const override
